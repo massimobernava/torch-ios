@@ -56,6 +56,8 @@ generate_arch() {
     
     cp $SCRIPT_DIR/build/3rdparty/nn/libnn.a                 $SCRIPT_DIR/framework/lib/$1
     cp $SCRIPT_DIR/build/3rdparty/image/libimage.a           $SCRIPT_DIR/framework/lib/$1
+    cp $SCRIPT_DIR/build/3rdparty/image/libjpeg.a           $SCRIPT_DIR/framework/lib/$1
+    cp $SCRIPT_DIR/build/3rdparty/image/libpng.a           $SCRIPT_DIR/framework/lib/$1
     cp $SCRIPT_DIR/build/3rdparty/nnx/libnnx.a               $SCRIPT_DIR/framework/lib/$1
     cp $SCRIPT_DIR/build/3rdparty/cjson/libcjson.a           $SCRIPT_DIR/framework/lib/$1
     
@@ -89,13 +91,15 @@ extract_recombine() {
     cd $SCRIPT_DIR/framework/lib/$1
     extract_archive cjson
     extract_archive image
+    extract_archive png
+    extract_archive jpeg
     extract_archive luaT
     extract_archive nn
     extract_archive nnx
     extract_archive TH
     extract_archive torch
     extract_archive torch-lua-static
-    ar -qc libtorch-$1.a cjson/*.o image/*.o luaT/*.o nn/*.o nnx/*.o TH/*.o \
+    ar -qc libtorch-$1.a cjson/*.o image/*.o png/*.o jpeg/*.o luaT/*.o nn/*.o nnx/*.o TH/*.o \
         torch/*.o torch-lua-static/*.o
     cd $SCRIPT_DIR
 }
