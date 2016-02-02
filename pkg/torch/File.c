@@ -74,13 +74,13 @@ IMPLEMENT_TORCH_FILE_FUNC(close)
         long nread;                                                     \
                                                                         \
         TH##TYPEC##Storage *storage = TH##TYPEC##Storage_newWithSize(size); \
-        luaT_pushudata(L, storage, "torch." #TYPEC "Storage");           \
+        luaT_pushudata(L, storage, "torch." #TYPEC "Storage");          \
         nread = THFile_read##TYPEC(self, storage);                      \
         if(nread != size)                                               \
-          TH##TYPEC##Storage_resize(storage, size);                     \
+          TH##TYPEC##Storage_resize(storage, nread);                    \
         return 1;                                                       \
       }                                                                 \
-      else if(luaT_toudata(L, 2, "torch." #TYPEC "Storage"))             \
+      else if(luaT_toudata(L, 2, "torch." #TYPEC "Storage"))            \
       {                                                                 \
         TH##TYPEC##Storage *storage = luaT_toudata(L, 2, "torch." #TYPEC "Storage"); \
         lua_pushnumber(L, THFile_read##TYPEC(self, storage));           \
@@ -88,7 +88,7 @@ IMPLEMENT_TORCH_FILE_FUNC(close)
       }                                                                 \
     }                                                                   \
                                                                         \
-    luaL_error(L, "nothing, number, or Storage expected");              \
+    luaL_error(L, "nothing, number, or " #TYPEC "Storage expected");    \
     return 0;                                                           \
   }                                                                     \
                                                                         \
@@ -113,7 +113,7 @@ IMPLEMENT_TORCH_FILE_FUNC(close)
       }                                                                 \
     }                                                                   \
                                                                         \
-    luaL_error(L, "number, or Storage expected");                       \
+    luaL_error(L, "number, or " #TYPEC "Storage expected");             \
     return 0;                                                           \
   }
 
@@ -199,6 +199,6 @@ static const struct luaL_Reg torch_File__ [] = {
 void torch_File_init(lua_State *L)
 {
   luaT_newmetatable(L, "torch.File", NULL, NULL, NULL, NULL);
-  luaL_register(L, NULL, torch_File__);
+  luaT_setfuncs(L, torch_File__, 0);
   lua_pop(L, 1);
 }

@@ -1,8 +1,14 @@
 #ifndef LUAT_UTILS_INC
 #define LUAT_UTILS_INC
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <lua.h>
 #include <lauxlib.h>
+#ifdef __cplusplus
+}
+#endif
 
 #ifndef LUA_EXTERNC
 # ifdef __cplusplus
@@ -12,7 +18,7 @@
 # endif
 #endif
 
-#ifdef _MSC_VER
+#if (defined(_MSC_VER) || defined(__MINGW32__))
 # define DLL_EXPORT __declspec(dllexport)
 # define DLL_IMPORT __declspec(dllimport)
 # ifdef luaT_EXPORTS
@@ -26,12 +32,26 @@
 # define LUAT_API LUA_EXTERNC
 #endif
 
+#if LUA_VERSION_NUM == 501
+# define lua_pushglobaltable(L) lua_pushvalue(L, LUA_GLOBALSINDEX)
+# define lua_setuservalue lua_setfenv
+# define lua_getuservalue lua_getfenv
+#else
+# define lua_objlen lua_rawlen
+static int luaL_typerror(lua_State *L, int narg, const char *tname)
+{
+  return luaL_error(L, "%s expected, got %s", tname, luaL_typename(L, narg));
+}
+#endif
+
 
 /* C functions */
 
 LUAT_API void* luaT_alloc(lua_State *L, long size);
 LUAT_API void* luaT_realloc(lua_State *L, void *ptr, long size);
 LUAT_API void luaT_free(lua_State *L, void *ptr);
+
+LUAT_API void luaT_setfuncs(lua_State *L, const luaL_Reg *l, int nup);
 
 LUAT_API const char* luaT_newmetatable(lua_State *L, const char *tname, const char *parenttname,
                                        lua_CFunction constructor, lua_CFunction destructor, lua_CFunction factory);
@@ -63,7 +83,7 @@ LUAT_API void luaT_registeratname(lua_State *L, const struct luaL_Reg *methods, 
 
 /* utility functions */
 LUAT_API const char *luaT_classrootname(const char *tname);
-LUAT_API const char *luaT_classmodulename(const char *tname);
+LUAT_API int luaT_classmodulename(const char *tname, char *module_name);
 
 /* debug */
 LUAT_API void luaT_stackdump(lua_State *L);
@@ -80,13 +100,15 @@ LUAT_API int luaT_lua_getenv(lua_State *L);
 LUAT_API int luaT_lua_getmetatable(lua_State *L);
 LUAT_API int luaT_lua_version(lua_State *L);
 LUAT_API int luaT_lua_setmetatable(lua_State *L);
+LUAT_API int luaT_lua_metatype(lua_State *L);
+LUAT_API int luaT_lua_pushudata(lua_State *L);
 
 /* deprecated functions */
 /* ids have been replaced by string names to identify classes */
 /* comments show what function (that you should use) they call now */
 #if (__GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 1))
 #define LUAT_DEPRECATED  __attribute__((__deprecated__))
-#elif defined(_MSC_VER)
+#elif (defined(_MSC_VER) || defined(__MINGW32__))
 #define LUAT_DEPRECATED __declspec(deprecated)
 #else
 #define LUAT_DEPRECATED

@@ -39,7 +39,7 @@ SET(SSE4_1_CODE "
 
   int main ()
   {
-    __m128i a, b;
+    __m128i a = {0,0,0,0}, b = {0,0,0,0};
     __m128i res = _mm_max_epi8(a, b);
 
     return 0;
@@ -51,8 +51,19 @@ SET(SSE4_2_CODE "
 
   int main()
   {
-    __m128i a, b, c;
+    __m128i a = {0,0,0,0}, b = {0,0,0,0}, c = {0,0,0,0};
     c = _mm_cmpgt_epi64(a, b);
+    return 0;
+  }
+")
+
+SET(AVX_CODE "
+  #include <immintrin.h>
+
+  int main()
+  {
+     __m256 a;
+    a = _mm256_set1_ps(0);
     return 0;
   }
 ")
@@ -91,6 +102,7 @@ CHECK_SSE(C "SSE2" " ;-msse2;/arch:SSE2")
 CHECK_SSE(C "SSE3" " ;-msse3;/arch:SSE3")
 CHECK_SSE(C "SSE4_1" " ;-msse4.1;-msse4;/arch:SSE4")
 CHECK_SSE(C "SSE4_2" " ;-msse4.2;-msse4;/arch:SSE4")
+CHECK_SSE(C "AVX" " ;-mavx;/arch:AVX")
 
 CHECK_SSE(CXX "SSE1" " ;-msse;/arch:SSE")
 CHECK_SSE(CXX "SSE2" " ;-msse2;/arch:SSE2")

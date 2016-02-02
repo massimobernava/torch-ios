@@ -1,80 +1,92 @@
 local LookupTable, parent = torch.class('nn.LookupTable', 'nn.Module')
 
-LookupTable.__version = 2
+LookupTable.__version = 4
 
-function LookupTable:__init(nIndex, ...)
+function LookupTable:__init(nIndex, nOutput)
    parent.__init(self)
-   local arg = {...}
 
-   if select('#', ...) == 1 and type(arg[1]) ~= "number" then
-      local size = arg[1]
-      self.size = torch.LongStorage(#size + 1)
-      for i=1,#size do
-         self.size[i+1] = size[i]
-      end
-   else
-      self.size = torch.LongStorage(select('#', ...)+1)
-      for i=1,select('#',...) do
-         self.size[i+1] = arg[i]
-      end
-   end
-
-   self.size[1] = nIndex
-   self.weight = torch.Tensor(self.size)
-   self.gradWeight = torch.Tensor(self.size):zero()
-   self.inputs = {}
+   self.weight = torch.Tensor(nIndex, nOutput)
+   self.gradWeight = torch.Tensor(nIndex, nOutput):zero()
 
    self:reset()
 end
 
+function LookupTable:backCompatibility()
+    self._count = self._count or torch.IntTensor()
+    self._input = self._input or torch.LongTensor()
+
+    if self.shouldScaleGradByFreq == nil then
+        self.shouldScaleGradByFreq = false
+    end
+end
+
+function LookupTable:accUpdateOnly()
+   self.gradWeight = nil
+   return self
+end
+
+function LookupTable:scaleGradByFreq()
+   self.shouldScaleGradByFreq = true
+   return self
+end
+
 function LookupTable:reset(stdv)
    stdv = stdv or 1
-   if nn.oldSeed then
-      self.weight:apply(function()
-         return torch.normal(0, stdv)
-      end)
-   else
-      self.weight:normal(0, stdv)
+   self.weight:normal(0, stdv)
+end
+
+function LookupTable:makeInputContiguous(input)
+   -- make sure input is a contiguous torch.LongTensor
+   if (not input:isContiguous()) or torch.type(input) ~= torch.type(self._input) then
+      self.copiedInput = true
+      self._input:resize(input:size()):copy(input)
+      return self._input
    end
+   self.copiedInput = false
+   return input
 end
 
 function LookupTable:updateOutput(input)
-   local nIndex = input:size(1)
-   self.size[1] = nIndex
-   self.output:resize(self.size)
-
-   for i=1,nIndex do
-      self.output:select(1, i):copy(self.weight:select(1, input[i]))
+   self:backCompatibility()
+   input = self:makeInputContiguous(input)
+   if input:dim() == 1 then
+      self.output:index(self.weight, 1, input)
+   elseif input:dim() == 2 then
+      self.output:index(self.weight, 1, input:view(-1))
+      self.output = self.output:view(input:size(1), input:size(2), self.weight:size(2))
+   else
+      error("input must be a vector or matrix")
    end
-
    return self.output
 end
 
-function LookupTable:zeroGradParameters()
-   for k,_ in pairs(self.inputs) do
-      self.gradWeight:select(1, k):zero()
-   end
-   self.inputs = {}
-end
-
 function LookupTable:accGradParameters(input, gradOutput, scale)
-   for i=1,input:size(1) do
-      local k = input[i]
-      self.inputs[k] = true
-      self.gradWeight:select(1, k):add(scale, gradOutput:select(1, i))
+   self:backCompatibility()
+   input = self.copiedInput and self._input or input
+   if input:dim() == 2 then
+      input = input:view(-1)
+   elseif input:dim() ~= 1 then
+      error("input must be a vector or matrix")
    end
+   self.gradWeight.nn.LookupTable_accGradParameters(self, input, gradOutput, scale)
 end
 
-function LookupTable:accUpdateGradParameters(input, gradOutput, lr)
-   for i=1,input:size(1) do
-      self.weight:select(1, input[i]):add(-lr, gradOutput:select(1, i))
-   end
-end
+function LookupTable:type(type, tensorCache)
+   parent.type(self, type, tensorCache)
 
-function LookupTable:updateParameters(learningRate)
-   for k,_ in pairs(self.inputs) do
-      self.weight:select(1, k):add(-learningRate, self.gradWeight:select(1, k))
+   if type == 'torch.CudaTensor' then
+      -- CUDA uses _sorted and _indices temporary tensors
+      self._sorted = self.weight.new()
+      self._indices = self.weight.new()
+      self._count = self.weight.new()
+      self._input = self.weight.new()
+   else
+      -- self._count and self._input should only be converted if using Cuda
+      self._count = torch.IntTensor()
+      self._input = torch.LongTensor()
    end
+
+   return self
 end
 
 -- we do not need to accumulate parameters when sharing

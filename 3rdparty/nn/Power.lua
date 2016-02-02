@@ -15,7 +15,8 @@ function Power:updateOutput(input)
 end
 
 function Power:updateGradInput(input, gradOutput)
-   self.gradInput:resizeAs(input):copy(gradOutput)
-   self.gradInput:cmul(self.output):cdiv(input):mul(self.pow)
+   self.gradInput:resizeAs(input):copy(input)
+   self.gradInput:pow(self.pow - 1)
+   self.gradInput:cmul(gradOutput):mul(self.pow)
    return self.gradInput
 end

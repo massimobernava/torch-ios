@@ -48,6 +48,8 @@ struct my_error_mgr {
   struct jpeg_error_mgr pub;	/* "public" fields */
 
   jmp_buf setjmp_buffer;	/* for return to caller */
+
+  char msg[JMSG_LENGTH_MAX]; /* last error message */
 };
 
 typedef struct my_error_mgr * my_error_ptr;
@@ -63,12 +65,23 @@ libjpeg_(Main_error) (j_common_ptr cinfo)
   /* cinfo->err really points to a my_error_mgr struct, so coerce pointer */
   my_error_ptr myerr = (my_error_ptr) cinfo->err;
 
-  /* Always display the message. */
-  /* We could postpone this until after returning, if we chose. */
+  /* See below. */
   (*cinfo->err->output_message) (cinfo);
 
   /* Return control to the setjmp point */
   longjmp(myerr->setjmp_buffer, 1);
+}
+
+/*
+ * Here's the routine that will replace the standard output_message method:
+ */
+
+METHODDEF(void)
+libjpeg_(Main_output_message) (j_common_ptr cinfo)
+{
+  my_error_ptr myerr = (my_error_ptr) cinfo->err;
+
+  (*cinfo->err->format_message) (cinfo, myerr->msg);
 }
 
 
@@ -91,7 +104,7 @@ static int libjpeg_(Main_size)(lua_State *L)
   struct my_error_mgr jerr;
   /* More stuff */
   FILE * infile;		/* source file */
-  
+
   const char *filename = luaL_checkstring(L, 1);
 
   /* In this example we want to open the input file before doing anything else,
@@ -104,12 +117,13 @@ static int libjpeg_(Main_size)(lua_State *L)
   {
     luaL_error(L, "cannot open file <%s> for reading", filename);
   }
-  
+
   /* Step 1: allocate and initialize JPEG decompression object */
-  
+
   /* We set up the normal JPEG error routines, then override error_exit. */
   cinfo.err = jpeg_std_error(&jerr.pub);
   jerr.pub.error_exit = libjpeg_(Main_error);
+  jerr.pub.output_message = libjpeg_(Main_output_message);
   /* Establish the setjmp return context for my_error_exit to use. */
   if (setjmp(jerr.setjmp_buffer)) {
     /* If we get here, the JPEG code has signaled an error.
@@ -117,7 +131,7 @@ static int libjpeg_(Main_size)(lua_State *L)
      */
     jpeg_destroy_decompress(&cinfo);
     fclose(infile);
-    return 0;
+    luaL_error(L, jerr.msg);
   }
 
   /* Now we can initialize the JPEG decompression object. */
@@ -185,46 +199,63 @@ static int libjpeg_(Main_load)(lua_State *L)
    */
   struct my_error_mgr jerr;
   /* More stuff */
-  FILE * infile;		/* source file */
+  FILE * infile;		    /* source file (if loading from file) */
+  unsigned char * inmem;    /* source memory (if loading from memory) */
+  unsigned long inmem_size; /* source memory size (bytes) */
   JSAMPARRAY buffer;		/* Output row buffer */
   /* int row_stride;		/1* physical row width in output buffer *1/ */
   int i, k;
 
-  const char *filename = luaL_checkstring(L, 1);
-
   THTensor *tensor = NULL;
+  const int load_from_file = luaL_checkint(L, 1);
 
-  /* In this example we want to open the input file before doing anything else,
-   * so that the setjmp() error recovery below can assume the file is open.
-   * VERY IMPORTANT: use "b" option to fopen() if you are on a machine that
-   * requires it in order to read binary files.
-   */
+  if (load_from_file == 1) {
+    const char *filename = luaL_checkstring(L, 2);
 
-  if ((infile = fopen(filename, "rb")) == NULL)
-  {
-    luaL_error(L, "cannot open file <%s> for reading", filename);
+    /* In this example we want to open the input file before doing anything else,
+     * so that the setjmp() error recovery below can assume the file is open.
+     * VERY IMPORTANT: use "b" option to fopen() if you are on a machine that
+     * requires it in order to read binary files.
+     */
+
+    if ((infile = fopen(filename, "rb")) == NULL)
+    {
+      luaL_error(L, "cannot open file <%s> for reading", filename);
+    }
+  } else {
+    /* We're loading from a ByteTensor */
+    THByteTensor *src = luaT_checkudata(L, 2, "torch.ByteTensor");
+    inmem = THByteTensor_data(src);
+    inmem_size = src->size[0];
+    infile = NULL;
   }
-  
+
   /* Step 1: allocate and initialize JPEG decompression object */
 
   /* We set up the normal JPEG error routines, then override error_exit. */
   cinfo.err = jpeg_std_error(&jerr.pub);
   jerr.pub.error_exit = libjpeg_(Main_error);
+  jerr.pub.output_message = libjpeg_(Main_output_message);
   /* Establish the setjmp return context for my_error_exit to use. */
   if (setjmp(jerr.setjmp_buffer)) {
     /* If we get here, the JPEG code has signaled an error.
      * We need to clean up the JPEG object, close the input file, and return.
      */
     jpeg_destroy_decompress(&cinfo);
-    fclose(infile);
-    return 0;
+    if (infile) {
+      fclose(infile);
+    }
+    luaL_error(L, jerr.msg);
   }
   /* Now we can initialize the JPEG decompression object. */
   jpeg_create_decompress(&cinfo);
 
   /* Step 2: specify data source (eg, a file) */
-
-  jpeg_stdio_src(&cinfo, infile);
+  if (load_from_file == 1) {
+    jpeg_stdio_src(&cinfo, infile);
+  } else {
+    jpeg_mem_src(&cinfo, inmem, inmem_size);
+  }
 
   /* Step 3: read file parameters with jpeg_read_header() */
 
@@ -253,13 +284,16 @@ static int libjpeg_(Main_load)(lua_State *L)
    * output image dimensions available, as well as the output colormap
    * if we asked for color quantization.
    * In this example, we need to make an output work buffer of the right size.
-   */ 
+   */
 
   /* Make a one-row-high sample array that will go away when done with image */
-
-  tensor = THTensor_(newWithSize3d)(cinfo.output_components, cinfo.output_height, cinfo.output_width);
+  const unsigned int chans = cinfo.output_components;
+  const unsigned int height = cinfo.output_height;
+  const unsigned int width = cinfo.output_width;
+  tensor = THTensor_(newWithSize3d)(chans, height, width);
+  real *tdata = THTensor_(data)(tensor);
   buffer = (*cinfo.mem->alloc_sarray)
-		((j_common_ptr) &cinfo, JPOOL_IMAGE, cinfo.output_width * cinfo.output_components, 1);
+    ((j_common_ptr) &cinfo, JPOOL_IMAGE, chans * width, 1);
 
   /* Step 6: while (scan lines remain to be read) */
   /*           jpeg_read_scanlines(...); */
@@ -267,21 +301,39 @@ static int libjpeg_(Main_load)(lua_State *L)
   /* Here we use the library's state variable cinfo.output_scanline as the
    * loop counter, so that we don't have to keep track ourselves.
    */
-  while (cinfo.output_scanline < cinfo.output_height) {
+  while (cinfo.output_scanline < height) {
     /* jpeg_read_scanlines expects an array of pointers to scanlines.
      * Here the array is only one element long, but you could ask for
      * more than one scanline at a time if that's more convenient.
      */
     (void) jpeg_read_scanlines(&cinfo, buffer, 1);
-    
-    for(k = 0; k < cinfo.output_components; k++)
-    {
-      for(i = 0; i < cinfo.output_width; i++)
-        THTensor_(set3d)(tensor, k, cinfo.output_scanline-1, i, 
-                         (real)buffer[0][cinfo.output_components*i+k]);
+    const unsigned int j = cinfo.output_scanline-1;
+
+    if (chans == 3) { /* special-case for speed */
+      real *td1 = tdata + 0 * (height * width) + j * width;
+      real *td2 = tdata + 1 * (height * width) + j * width;
+      real *td3 = tdata + 2 * (height * width) + j * width;
+      const unsigned char *buf = buffer[0];
+      for(i = 0; i < width; i++) {
+        *td1++ = (real)buf[chans * i + 0];
+        *td2++ = (real)buf[chans * i + 1];
+        *td3++ = (real)buf[chans * i + 2];
+      }
+    } else if (chans == 1) { /* special-case for speed */
+      real *td = tdata + j * width;
+      for(i = 0; i < width; i++) {
+        *td++ = (real)buffer[0][i];
+      }
+    } else { /* general case */
+      for(k = 0; k < chans; k++) {
+        const unsigned int k_ = k;
+        real *td = tdata + k_ * (height * width) + j * width;
+        for(i = 0; i < width; i++) {
+          *td++ = (real)buffer[0][chans * i + k_];
+        }
+      }
     }
   }
-
   /* Step 7: Finish decompression */
 
   (void) jpeg_finish_decompress(&cinfo);
@@ -299,7 +351,9 @@ static int libjpeg_(Main_load)(lua_State *L)
    * so as to simplify the setjmp error logic above.  (Actually, I don't
    * think that jpeg_destroy can do an error exit, but why assume anything...)
    */
-  fclose(infile);
+  if (infile) {
+    fclose(infile);
+  }
 
   /* At this point you may want to check to see whether any corrupt-data
    * warnings occurred (test whether jerr.pub.num_warnings is nonzero).
@@ -315,11 +369,26 @@ static int libjpeg_(Main_load)(lua_State *L)
  *
  */
 int libjpeg_(Main_save)(lua_State *L) {
+  unsigned char *inmem = NULL;  /* destination memory (if saving to memory) */
+  unsigned long inmem_size = 0;  /* destination memory size (bytes) */
+
   /* get args */
   const char *filename = luaL_checkstring(L, 1);
-  THTensor *tensor = luaT_checkudata(L, 2, torch_Tensor);  
+  THTensor *tensor = luaT_checkudata(L, 2, torch_Tensor);
   THTensor *tensorc = THTensor_(newContiguous)(tensor);
   real *tensor_data = THTensor_(data)(tensorc);
+
+  const int save_to_file = luaL_checkint(L, 3);
+
+  THByteTensor* tensor_dest = NULL;
+  if (save_to_file == 0) {
+    tensor_dest = luaT_checkudata(L, 5, "torch.ByteTensor");
+  }
+
+  int quality = luaL_checkint(L, 4);
+  if (quality < 0 || quality > 100) {
+    luaL_error(L, "quality should be between 0 and 100");
+  }
 
   /* jpeg struct */
   struct jpeg_compress_struct cinfo;
@@ -366,24 +435,33 @@ int libjpeg_(Main_save)(lua_State *L) {
 
   /* this is a pointer to one row of image data */
   JSAMPROW row_pointer[1];
-  FILE *outfile = fopen( filename, "wb" );
-
-  if ( !outfile ) {
-    printf("Error opening output jpeg file %s\n!", filename );
-    return -1;
+  FILE *outfile = NULL;
+  if (save_to_file == 1) {
+    outfile = fopen( filename, "wb" );
+    if ( !outfile ) {
+      luaL_error(L, "Error opening output jpeg file %s\n!", filename );
+    }
   }
+
   cinfo.err = jpeg_std_error( &jerr );
   jpeg_create_compress(&cinfo);
-  jpeg_stdio_dest(&cinfo, outfile);
+
+  /* specify data source (eg, a file) */
+  if (save_to_file == 1) {
+    jpeg_stdio_dest(&cinfo, outfile);
+  } else {
+    jpeg_mem_dest(&cinfo, &inmem, &inmem_size);
+  }
 
   /* Setting the parameters of the output file here */
-  cinfo.image_width = width;	
+  cinfo.image_width = width;
   cinfo.image_height = height;
   cinfo.input_components = bytes_per_pixel;
   cinfo.in_color_space = color_space;
 
   /* default compression parameters, we shouldn't be worried about these */
   jpeg_set_defaults( &cinfo );
+  jpeg_set_quality(&cinfo, quality, (boolean)0);
 
   /* Now do the compression .. */
   jpeg_start_compress( &cinfo, TRUE );
@@ -397,7 +475,18 @@ int libjpeg_(Main_save)(lua_State *L) {
   /* similar to read file, clean up after we're done compressing */
   jpeg_finish_compress( &cinfo );
   jpeg_destroy_compress( &cinfo );
-  fclose( outfile );
+
+  if (outfile != NULL) {
+    fclose( outfile );
+  }
+
+  if (save_to_file == 0) {
+
+    THByteTensor_resize1d(tensor_dest, inmem_size);  /* will fail if it's not a Byte Tensor */
+    unsigned char* tensor_dest_data = THByteTensor_data(tensor_dest);
+    memcpy(tensor_dest_data, inmem, inmem_size);
+    free(inmem);
+  }
 
   /* some cleanup */
   free(raw_image);
@@ -407,7 +496,7 @@ int libjpeg_(Main_save)(lua_State *L) {
   return 1;
 }
 
-static const luaL_reg libjpeg_(Main__)[] =
+static const luaL_Reg libjpeg_(Main__)[] =
 {
   {"size", libjpeg_(Main_size)},
   {"load", libjpeg_(Main_load)},

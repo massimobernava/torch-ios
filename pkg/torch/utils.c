@@ -1,7 +1,11 @@
 #include "general.h"
 #include "utils.h"
 
-#include <sys/time.h>
+#ifdef WIN32
+# include <time.h>
+#else
+# include <sys/time.h>
+#endif
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -59,7 +63,7 @@ int torch_islongargs(lua_State *L, int index)
 
 static int torch_isatty(lua_State *L)
 {
-#ifdef LUA_WIN
+#ifdef _WIN32
   lua_pushboolean(L, 0);
 #else
   FILE **fp = (FILE **) luaL_checkudata(L, -1, LUA_FILEHANDLE);
@@ -68,20 +72,29 @@ static int torch_isatty(lua_State *L)
   return 1;
 }
 
+static double real_time()
+{
+#ifdef _WIN32
+  time_t ltime;
+  time(&ltime);
+  return (double)(ltime);
+#else
+  struct timeval current;
+  gettimeofday(&current, NULL);
+  return (current.tv_sec + current.tv_usec/1000000.0);
+#endif
+}
+
 static int torch_lua_tic(lua_State* L)
 {
-  struct timeval tv;
-  gettimeofday(&tv,NULL);
-  double ttime = (double)tv.tv_sec + (double)(tv.tv_usec)/1000000.0;
+  double ttime = real_time();
   lua_pushnumber(L,ttime);
   return 1;
 }
 
 static int torch_lua_toc(lua_State* L)
 {
-  struct timeval tv;
-  gettimeofday(&tv,NULL);
-  double toctime = (double)tv.tv_sec + (double)(tv.tv_usec)/1000000.0;
+  double toctime = real_time();
   lua_Number tictime = luaL_checknumber(L,1);
   lua_pushnumber(L,toctime-tictime);
   return 1;
@@ -100,7 +113,7 @@ static int torch_lua_getdefaulttensortype(lua_State *L)
 
 const char* torch_getdefaulttensortype(lua_State *L)
 {
-  lua_getfield(L, LUA_GLOBALSINDEX, "torch");
+  lua_getglobal(L, "torch");
   if(lua_istable(L, -1))
   {
     lua_getfield(L, -1, "Tensor");
@@ -165,6 +178,33 @@ static int torch_setnumthreads(lua_State *L)
   return 0;
 }
 
+static int torch_getnumcores(lua_State *L)
+{
+#ifdef _OPENMP
+  lua_pushinteger(L, omp_get_num_procs());
+#else
+  lua_pushinteger(L, 1);
+#endif
+  return 1;
+}
+
+static void luaTorchGCFunction(void *data)
+{
+  lua_State *L = data;
+  lua_gc(L, LUA_GCCOLLECT, 0);
+}
+
+static int torch_setheaptracking(lua_State *L)
+{
+  int enabled = luaT_checkboolean(L,1);
+  if(enabled) {
+    THSetGCHandler(luaTorchGCFunction, L);
+  } else {
+    THSetGCHandler(NULL, NULL);
+  }
+  return 0;
+}
+
 static const struct luaL_Reg torch_utils__ [] = {
   {"getdefaulttensortype", torch_lua_getdefaulttensortype},
   {"isatty", torch_isatty},
@@ -172,6 +212,7 @@ static const struct luaL_Reg torch_utils__ [] = {
   {"toc", torch_lua_toc},
   {"setnumthreads", torch_setnumthreads},
   {"getnumthreads", torch_getnumthreads},
+  {"getnumcores", torch_getnumcores},
   {"factory", luaT_lua_factory},
   {"getconstructortable", luaT_lua_getconstructortable},
   {"typename", luaT_lua_typename},
@@ -181,12 +222,15 @@ static const struct luaL_Reg torch_utils__ [] = {
   {"newmetatable", luaT_lua_newmetatable},
   {"setmetatable", luaT_lua_setmetatable},
   {"getmetatable", luaT_lua_getmetatable},
+  {"metatype", luaT_lua_metatype},
+  {"pushudata", luaT_lua_pushudata},
   {"version", luaT_lua_version},
   {"pointer", luaT_lua_pointer},
+  {"setheaptracking", torch_setheaptracking},
   {NULL, NULL}
 };
 
 void torch_utils_init(lua_State *L)
 {
-  luaL_register(L, NULL, torch_utils__);
+  luaT_setfuncs(L, torch_utils__, 0);
 }

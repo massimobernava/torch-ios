@@ -1,6 +1,6 @@
 nn.Jacobian = {}
 
-function nn.Jacobian.backward (module, input, param, dparam)
+function nn.Jacobian.backward(module, input, param, dparam)
    local doparam = 0
    if param then
       doparam = 1
@@ -21,15 +21,15 @@ function nn.Jacobian.backward (module, input, param, dparam)
       local din = module:updateGradInput(input, dout)
       module:accGradParameters(input, dout)
       if doparam == 1 then
-	 jacobian:select(2,i):copy(dparam)
+         jacobian:select(2,i):copy(dparam)
       else
-	 jacobian:select(2,i):copy(din)
+         jacobian:select(2,i):copy(din)
       end
    end
    return jacobian
 end
 
-function nn.Jacobian.backwardUpdate (module, input, param)
+function nn.Jacobian.backwardUpdate(module, input, param)
 
    -- output deriv
    module:forward(input)
@@ -52,7 +52,7 @@ function nn.Jacobian.backwardUpdate (module, input, param)
       end
       dout:zero()
       sdout[i] = 1
-      local din = module:updateGradInput(input, dout)
+      module:updateGradInput(input, dout)
       module:accUpdateGradParameters(input, dout, 1)
       jacobian:select(2,i):copy(param)
    end
@@ -64,53 +64,159 @@ function nn.Jacobian.backwardUpdate (module, input, param)
    return jacobian
 end
 
-function nn.Jacobian.forward(module, input, param)
+function nn.Jacobian.forward(module, input, param, perturbation)
    param = param or input
    -- perturbation amount
-   local small = 1e-6
+   perturbation = perturbation or 1e-6
    -- 1D view of input
    --local tst = param:storage()
    local sin = param.new(param):resize(param:nElement())--param.new(tst,1,tst:size())
    -- jacobian matrix to calculate
    local jacobian = torch.Tensor():resize(param:nElement(),module:forward(input):nElement())
-   
+
    local outa = torch.Tensor(jacobian:size(2))
    local outb = torch.Tensor(jacobian:size(2))
-   
-   for i=1,sin:nElement() do      
-      sin[i] = sin[i] - small
-      outa:copy(module:forward(input))
-      sin[i] = sin[i] + 2*small
-      outb:copy(module:forward(input))
-      sin[i] = sin[i] - small
 
-      outb:add(-1,outa):div(2*small)
+   for i=1,sin:nElement() do
+      local orig = sin[i]
+      sin[i] = orig - perturbation
+      outa:copy(module:forward(input))
+      sin[i] = orig + perturbation
+      outb:copy(module:forward(input))
+      sin[i] = orig
+
+      outb:add(-1,outa):div(2*perturbation)
       jacobian:select(1,i):copy(outb)
    end
 
    return jacobian
 end
 
-function nn.Jacobian.forwardUpdate(module, input, param)
+function nn.Jacobian.backwardDiagHessian(module, input, diagHessianParamName)
+   -- Compute the second derivatives (diagonal Hessian elements)
+   -- by backpropagation (using the code from hessian.lua).
+   --
+   -- This function computes the diagonal Hessian elements of the following function:
+   --
+   -- F(x_1, x_2, ..., x_n) = y_1^2/2 + y_2^2/2 + ... + y_m^2/2,
+   --
+   -- where
+   -- x_1, ..., x_n are the input values and parameters of the given module,
+   -- y_1, ..., y_m are the output values of the given module.
+   --
+   -- All x_i and y_i values are scalars here. In other words,
+   -- x_1, ..., x_n denote the scalar elements of the module input tensor,
+   --             the scalar elements of module.weight,
+   --             and the scalar elements of module.bias;
+   -- y_1, ..., y_m are the scalar elements of the module output tensor.
+   --
+   -- The diagonal Hessian elements of F are computed with respect to
+   -- the module input values and parameters (x_1, .., x_n).
+   --
+   -- The function F is chosen for its convenient properties:
+   --
+   -- dF / dy_i = y_i,
+   -- d^2F / dy_i^2 = 1.
+   --
+   -- In other words, the diagonal Hessian elements of F with respect
+   -- to the module OUTPUT values (y_1, ... y_m) are equal to 1.
+   --
+   -- Because of that, computing the diagonal Hessian elements of F
+   -- with respect to the module INPUT values and PARAMETERS (x_1, ..., x_n)
+   -- can be done by calling updateDiagHessianInput() and accDiagHessianParameters()
+   -- using a tensor of ones as diagHessianOutput.
+
+   module:forward(input)
+   local diagHessianOutput = module.output.new():resizeAs(module.output):fill(1)
+
+   module.diagHessianWeight:zero()
+   module.diagHessianBias:zero()
+   module:updateDiagHessianInput(input, diagHessianOutput)
+   module:accDiagHessianParameters(input, diagHessianOutput)
+
+   return module[diagHessianParamName]
+end
+
+function nn.Jacobian.linearModuleDiagHessian(module, input, gradParamName)
+   -- Compute the second derivatives (diagonal Hessian elements)
+   -- from the first derivatives for the given module
+   -- (without using the code from hessian.lua).
+   --
+   -- The given module is assumed to be linear with respect to its inputs and weights
+   -- (like nn.Linear, nn.SpatialConvolution, etc.)
+   --
+   -- This function computes the diagonal Hessian elements of the following function:
+   --
+   -- F(x_1, x_2, ..., x_n) = y_1^2/2 + y_2^2/2 + ... + y_m^2/2.
+   --
+   -- (See the the comment for nn.Jacobian.backwardDiagHessian() for explanation.)
+   --
+   -- The first derivatives of F with respect to
+   -- the module inputs and parameters (x_1, ..., x_n) are:
+   --
+   -- dF / dx_i = \sum_k (dF / dy_k) (dy_k / dx_i).
+   --
+   -- The second derivatives are:
+   --
+   -- d^2F / dx_i = \sum_k [(d^2F / dy_k^2) (dy_k / dx_i)^2 + (dF / dy_k) (d^2y_k / dx_i^2)].
+   --
+   -- The second derivatives of F with respect to the module outputs (y_1, ..., y_m)
+   -- are equal to 1, so:
+   --
+   -- d^2F / dx_i = \sum_k [(dy_k / dx_i)^2 + (dF / dy_k) (d^2y_k / dx_i^2)].
+   --
+   -- Assuming the linearity of module outputs (y_1, ..., y_m)
+   -- with respect to module inputs and parameters (x_1, ..., x_n),
+   -- we have (d^2y_k / dx_i^2) = 0,
+   -- and the expression finally becomes:
+   --
+   -- d^2F / dx_i = \sum_k (dy_k / dx_i)^2.
+   --
+   -- The first derivatives (dy_k / dx_i) are computed by normal backpropagation,
+   -- using updateGradInput() and accGradParameters().
+
+   local gradParam = module[gradParamName]
+
+   local diagHessian = gradParam.new():resize(gradParam:nElement()):zero()
+
+   module:forward(input)
+   local gradOutput = module.output.new():resizeAs(module.output)
+   local gradOutput1D = gradOutput:view(gradOutput:nElement())
+
+   for i=1,gradOutput:nElement() do
+      gradOutput1D:zero()
+      gradOutput1D[i] = 1
+      module.gradWeight:zero()
+      module.gradBias:zero()
+      module:updateGradInput(input, gradOutput)
+      module:accGradParameters(input, gradOutput)
+      diagHessian:addcmul(gradParam, gradParam)
+   end
+
+   return diagHessian
+end
+
+function nn.Jacobian.forwardUpdate(module, input, param, perturbation)
    -- perturbation amount
-   local small = 1e-6
+   perturbation = perturbation or 1e-6
    -- 1D view of input
    --local tst = param:storage()
    local sin =  param.new(param):resize(param:nElement())--param.new(tst,1,tst:size())
    -- jacobian matrix to calculate
    local jacobian = torch.Tensor():resize(param:nElement(),module:forward(input):nElement())
-   
+
    local outa = torch.Tensor(jacobian:size(2))
    local outb = torch.Tensor(jacobian:size(2))
-   
-   for i=1,sin:nElement() do      
-      sin[i] = sin[i] - small
-      outa:copy(module:forward(input))
-      sin[i] = sin[i] + 2*small
-      outb:copy(module:forward(input))
-      sin[i] = sin[i] - small
 
-      outb:add(-1,outa):div(2*small)
+   for i=1,sin:nElement() do
+      local orig = sin[i]
+      sin[i] = orig - perturbation
+      outa:copy(module:forward(input))
+      sin[i] = orig + perturbation
+      outb:copy(module:forward(input))
+      sin[i] = orig
+
+      outb:add(-1,outa):div(2*perturbation)
       jacobian:select(1,i):copy(outb)
       jacobian:select(1,i):mul(-1)
       jacobian:select(1,i):add(sin[i])
@@ -118,40 +224,67 @@ function nn.Jacobian.forwardUpdate(module, input, param)
    return jacobian
 end
 
-function nn.Jacobian.testJacobian (module, input, minval, maxval)
+function nn.Jacobian.testJacobian(module, input, minval, maxval, perturbation)
    minval = minval or -2
    maxval = maxval or 2
    local inrange = maxval - minval
    input:copy(torch.rand(input:nElement()):mul(inrange):add(minval))
-   local jac_fprop = nn.Jacobian.forward(module,input)
-   local jac_bprop = nn.Jacobian.backward(module,input)
+   local jac_fprop = nn.Jacobian.forward(module, input, input, perturbation)
+   local jac_bprop = nn.Jacobian.backward(module, input)
    local error = jac_fprop-jac_bprop
    return error:abs():max()
 end
 
-function nn.Jacobian.testJacobianParameters (module, input, param, dparam, minval, maxval)
+function nn.Jacobian.testJacobianParameters(module, input, param, dparam, minval, maxval, perturbation)
    minval = minval or -2
    maxval = maxval or 2
    local inrange = maxval - minval
    input:copy(torch.rand(input:nElement()):mul(inrange):add(minval))
    param:copy(torch.rand(param:nElement()):mul(inrange):add(minval))
    local jac_bprop = nn.Jacobian.backward(module, input, param, dparam)
-   local jac_fprop = nn.Jacobian.forward(module, input, param)
+   local jac_fprop = nn.Jacobian.forward(module, input, param, perturbation)
    local error = jac_fprop - jac_bprop
    return error:abs():max()
 end
 
-function nn.Jacobian.testJacobianUpdateParameters (module, input, param, minval, maxval)
+function nn.Jacobian.testJacobianUpdateParameters(module, input, param, minval, maxval, perturbation)
    minval = minval or -2
    maxval = maxval or 2
    local inrange = maxval - minval
    input:copy(torch.rand(input:nElement()):mul(inrange):add(minval))
    param:copy(torch.rand(param:nElement()):mul(inrange):add(minval))
    local params_bprop = nn.Jacobian.backwardUpdate(module, input, param)
-   local params_fprop = nn.Jacobian.forwardUpdate(module, input, param)
+   local params_fprop = nn.Jacobian.forwardUpdate(module, input, param, perturbation)
 
    local error = params_fprop - params_bprop
    return error:abs():max()
+end
+
+function nn.Jacobian.testDiagHessian(module, input, gradParamName, diagHessianParamName, minval, maxval)
+   -- Compute the diagonal Hessian elements for the same function in two different ways,
+   -- then compare the results and return the difference.
+
+   minval = minval or -2
+   maxval = maxval or 2
+   local inrange = maxval - minval
+   input:copy(torch.rand(input:nElement()):mul(inrange):add(minval))
+   module:initDiagHessianParameters()
+   local h_bprop = nn.Jacobian.backwardDiagHessian(module, input, diagHessianParamName)
+   local h_linearmodule = nn.Jacobian.linearModuleDiagHessian(module, input, gradParamName)
+   local error = h_bprop - h_linearmodule
+   return error:abs():max()
+end
+
+function nn.Jacobian.testDiagHessianInput(module, input, minval, maxval)
+   return nn.Jacobian.testDiagHessian(module, input, 'gradInput', 'diagHessianInput', minval, maxval)
+end
+
+function nn.Jacobian.testDiagHessianWeight(module, input, minval, maxval)
+   return nn.Jacobian.testDiagHessian(module, input, 'gradWeight', 'diagHessianWeight', minval, maxval)
+end
+
+function nn.Jacobian.testDiagHessianBias(module, input, minval, maxval)
+   return nn.Jacobian.testDiagHessian(module, input, 'gradBias', 'diagHessianBias', minval, maxval)
 end
 
 function nn.Jacobian.testIO(module,input, minval, maxval)
@@ -170,17 +303,18 @@ function nn.Jacobian.testIO(module,input, minval, maxval)
    local bo = module.gradInput:clone()
 
    -- write module
-   local f = torch.DiskFile('tmp.bin','w'):binary()
+   local filename = os.tmpname()
+   local f = torch.DiskFile(filename, 'w'):binary()
    f:writeObject(module)
    f:close()
    -- read module
-   local m = torch.DiskFile('tmp.bin'):binary():readObject()
+   local m = torch.DiskFile(filename):binary():readObject()
    m:forward(input)
    m:zeroGradParameters()
    m:updateGradInput(input,go)
    m:accGradParameters(input,go)
    -- cleanup
-   os.remove('tmp.bin')
+   os.remove(filename)
 
    local fo2 = m.output:clone()
    local bo2 = m.gradInput:clone()
@@ -241,7 +375,7 @@ function nn.Jacobian.testAllUpdate(module, input, weight, gradWeight)
    macshu2:updateGradInput(input, gradOutput)
    macshu1:accUpdateGradParameters(input, gradOutput, lr)
    macshu2:accUpdateGradParameters(input, gradOutput, lr)
-   local err = (weightc-maccgp[gradWeight]*(lr*2)-macshu1[weight]):norm()
+   err = (weightc-maccgp[gradWeight]*(lr*2)-macshu1[weight]):norm()
    err = err + (weightc-maccgp[gradWeight]*(lr*2)-macshu2[weight]):norm()
    errors["accUpdateGradParameters [shared]"] = err
 

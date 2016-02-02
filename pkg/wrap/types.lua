@@ -1,5 +1,152 @@
 wrap.argtypes = {}
 
+wrap.argtypes.charoption = {
+   
+   helpname = function(arg)
+                 if arg.values then
+                    return "(" .. table.concat(arg.values, '|') .. ")"
+                 end
+              end,
+
+   declare = function(arg)
+                local txt = {}
+                table.insert(txt, string.format("const char *arg%d = NULL;", arg.i))
+                if arg.default then
+                   table.insert(txt, string.format("char arg%d_default = '%s';", arg.i, arg.default))
+                end
+                return table.concat(txt, '\n')
+           end,
+
+   init = function(arg)
+             return string.format("arg%d = &arg%d_default;", arg.i, arg.i)
+          end,
+   
+   check = function(arg, idx)
+              local txt = {}
+              local txtv = {}
+              table.insert(txt, string.format('(arg%d = lua_tostring(L, %d)) && (', arg.i, idx))
+              for _,value in ipairs(arg.values) do
+                 table.insert(txtv, string.format("*arg%d == '%s'", arg.i, value))
+              end
+              table.insert(txt, table.concat(txtv, ' || '))
+              table.insert(txt, ')')              
+              return table.concat(txt, '')
+         end,
+
+   read = function(arg, idx)
+          end,
+   
+   carg = function(arg, idx)
+             return string.format('arg%d', arg.i)
+          end,
+
+   creturn = function(arg, idx)
+             end,
+   
+   precall = function(arg)
+             end,
+
+   postcall = function(arg)
+              end   
+}
+
+wrap.argtypes.LongArg = {
+
+   vararg = true,
+
+   helpname = function(arg)
+               return "(LongStorage | dim1 [dim2...])"
+            end,
+
+   declare = function(arg)
+              return string.format("THLongStorage *arg%d = NULL;", arg.i)
+           end,
+
+   init = function(arg)
+             if arg.default then
+                error('LongArg cannot have a default value')
+             end
+          end,
+   
+   check = function(arg, idx)
+            return string.format("torch_islongargs(L, %d)", idx)
+         end,
+
+   read = function(arg, idx)
+             return string.format("arg%d = torch_checklongargs(L, %d);", arg.i, idx)
+          end,
+   
+   carg = function(arg, idx)
+             return string.format('arg%d', arg.i)
+          end,
+
+   creturn = function(arg, idx)
+                return string.format('arg%d', arg.i)
+             end,
+   
+   precall = function(arg)
+                local txt = {}
+                if arg.returned then
+                   table.insert(txt, string.format('luaT_pushudata(L, arg%d, "torch.LongStorage");', arg.i))
+                end
+                return table.concat(txt, '\n')
+             end,
+
+   postcall = function(arg)
+                 local txt = {}
+                 if arg.creturned then
+                    -- this next line is actually debatable
+                    table.insert(txt, string.format('THLongStorage_retain(arg%d);', arg.i))
+                    table.insert(txt, string.format('luaT_pushudata(L, arg%d, "torch.LongStorage");', arg.i))
+                 end
+                 if not arg.returned and not arg.creturned then
+                    table.insert(txt, string.format('THLongStorage_free(arg%d);', arg.i))
+                 end
+                 return table.concat(txt, '\n')
+              end   
+}
+
+wrap.argtypes.Generator = {
+
+   helpname = function(arg)
+                 return "Generator"
+              end,
+
+   declare = function(arg)
+                return string.format("THGenerator *arg%d = NULL;", arg.i)
+             end,
+
+   check = function(arg, idx)
+              return string.format("(arg%d = luaT_toudata(L, %d, torch_Generator))", arg.i, idx)
+           end,
+
+   read = function(arg, idx)
+          end,
+
+   init = function(arg)
+             local text = {}
+             -- If no generator is supplied, pull the default out of the torch namespace.
+             table.insert(text, 'lua_getglobal(L,"torch");')
+             table.insert(text, string.format('arg%d = luaT_getfieldcheckudata(L, -1, "_gen", torch_Generator);', arg.i))
+             table.insert(text, 'lua_pop(L, 2);')
+             return table.concat(text, '\n')
+          end,
+
+   carg = function(arg)
+             return string.format('arg%d', arg.i)
+          end,
+
+   creturn = function(arg)
+                return string.format('arg%d', arg.i)
+             end,
+
+   precall = function(arg)
+             end,
+
+   postcall = function(arg)
+              end
+}
+
 wrap.argtypes.Tensor = {
 
    helpname = function(arg)

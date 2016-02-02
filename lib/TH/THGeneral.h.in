@@ -12,6 +12,8 @@
 
 #cmakedefine USE_BLAS
 #cmakedefine USE_LAPACK
+#cmakedefine BLAS_IS_ACCELERATE
+#cmakedefine BLAS_F2C
 
 #ifdef __cplusplus
 # define TH_EXTERNC extern "C"
@@ -19,7 +21,7 @@
 # define TH_EXTERNC extern
 #endif
 
-#ifdef WIN32
+#ifdef _WIN32
 # ifdef TH_EXPORTS
 #  define TH_API TH_EXTERNC __declspec(dllexport)
 # else
@@ -31,6 +33,8 @@
 
 #define THInf DBL_MAX
 
+#define TH_INLINE @TH_INLINE@
+
 #ifndef __cplusplus
 #define inline @TH_INLINE@
 #endif
@@ -39,17 +43,33 @@
 # define M_PI 3.14159265358979323846
 #endif
 
-#ifdef _MSC_VER
-TH_API double log1p(const double x);
-#endif
-
-TH_API void THError(const char *fmt, ...);
-TH_API void THSetErrorHandler( void (*torchErrorHandlerFunction)(const char *msg) );
-TH_API void THArgCheck(int condition, int argNumber, const char *msg);
-TH_API void THSetArgErrorHandler( void (*torchArgErrorHandlerFunction)(int argNumber, const char *msg) );
+TH_API double THLog1p(const double x);
+TH_API void _THError(const char *file, const int line, const char *fmt, ...);
+TH_API void _THAssertionFailed(const char *file, const int line, const char *exp, const char *fmt, ...);
+TH_API void THSetErrorHandler( void (*torchErrorHandlerFunction)(const char *msg, void *data), void *data );
+TH_API void _THArgCheck(const char *file, int line, int condition, int argNumber, const char *fmt, ...);
+TH_API void THSetArgErrorHandler( void (*torchArgErrorHandlerFunction)(int argNumber, const char *msg, void *data), void *data );
 TH_API void* THAlloc(long size);
 TH_API void* THRealloc(void *ptr, long size);
 TH_API void THFree(void *ptr);
+TH_API void THSetGCHandler( void (*torchGCHandlerFunction)(void *data), void *data );
+// this hook should only be called by custom allocator functions
+TH_API void THHeapUpdate(long size);
+
+#define THError(...) _THError(__FILE__, __LINE__, __VA_ARGS__)
+#define THArgCheck(...) _THArgCheck(__FILE__, __LINE__, __VA_ARGS__)
+#define THAssert(exp)                                                 \
+do {                                                                  \
+  if (!(exp)) {                                                       \
+    _THAssertionFailed(__FILE__, __LINE__, #exp, "");                 \
+  }                                                                   \
+} while(0)
+#define THAssertMsg(exp, ...)                                         \
+do {                                                                  \
+  if (!(exp)) {                                                       \
+    _THAssertionFailed(__FILE__, __LINE__, #exp, __VA_ARGS__);        \
+  }                                                                   \
+} while(0)
 
 #define TH_CONCAT_STRING_2(x,y) TH_CONCAT_STRING_2_EXPAND(x,y)
 #define TH_CONCAT_STRING_2_EXPAND(x,y) #x #y
@@ -71,5 +91,12 @@ TH_API void THFree(void *ptr);
 
 #define THMin(X, Y)  ((X) < (Y) ? (X) : (Y))
 #define THMax(X, Y)  ((X) > (Y) ? (X) : (Y))
+
+#if (defined(_MSC_VER) || defined(__MINGW32__))
+# define log1p(x) THLog1p(x)
+#define snprintf _snprintf
+#define popen _popen
+#define pclose _pclose
+#endif
 
 #endif

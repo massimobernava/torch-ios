@@ -19,6 +19,11 @@ local TYPE_TABLE    = 3
 local TYPE_TORCH    = 4
 local TYPE_BOOLEAN  = 5
 local TYPE_FUNCTION = 6
+local TYPE_RECUR_FUNCTION = 8
+local LEGACY_TYPE_RECUR_FUNCTION = 7
+
+-- Lua 5.2 compatibility
+local loadstring = loadstring or load
 
 function File:isWritableObject(object)
    local typename = type(object)
@@ -36,7 +41,7 @@ function File:isWritableObject(object)
    elseif typename == 'boolean' then
       typeidx = TYPE_BOOLEAN
    elseif typename == 'function' and pcall(string.dump, object) then
-      typeidx = TYPE_FUNCTION
+      typeidx = TYPE_RECUR_FUNCTION
    end
    return typeidx
 end
@@ -59,6 +64,27 @@ function File:isReferenced()
    end
    local env = torch.getenv(self)
    return not env.force
+end
+
+local function getmetamethod(obj, name)
+   local func
+   local status
+
+   -- check getmetatable(obj).__name or
+   -- check getmetatable(obj).name
+   status, func = pcall(
+      function()
+         -- note that sometimes the metatable is hidden
+         -- we get it for sure through the torch type system
+         local mt = torch.getmetatable(torch.typename(obj))
+         if mt then
+            return mt['__' .. name] or mt[name]
+         end
+      end
+   )
+   if status and type(func) == 'function' then
+      return func
+   end
 end
 
 function File:writeObject(object)
@@ -90,19 +116,7 @@ function File:writeObject(object)
       local stringStorage = torch.CharStorage():string(object)
       self:writeInt(#stringStorage)
       self:writeChar(stringStorage)
-   elseif typeidx == TYPE_FUNCTION then
-      local upvalues = {}
-      while true do
-         local name,value = debug.getupvalue(object, #upvalues+1)
-         if not name then break end
-         table.insert(upvalues, value)
-      end
-      local dumped = string.dump(object)
-      local stringStorage = torch.CharStorage():string(dumped)
-      self:writeInt(#stringStorage)
-      self:writeChar(stringStorage)
-      self:writeObject(upvalues)
-   elseif typeidx == TYPE_TORCH or typeidx == TYPE_TABLE then
+   elseif typeidx == TYPE_TORCH or typeidx == TYPE_TABLE or  typeidx == TYPE_RECUR_FUNCTION then
       -- check it exists already (we look at the pointer!)
       local objects = torch.getenv(self).writeObjects
       local objectsRef = torch.getenv(self).writeObjectsRef
@@ -115,22 +129,37 @@ function File:writeObject(object)
          -- else write the object itself
          index = objects.nWriteObject or 0
          index = index + 1
-         objects[torch.pointer(object)] = index
          if not force then
+            objects[torch.pointer(object)] = index
             objectsRef[object] = index -- we make sure the object is not going to disappear
          end
          self:writeInt(index)
          objects.nWriteObject = index
-
-         if typeidx == TYPE_TORCH then
+         if typeidx == TYPE_RECUR_FUNCTION then
+            local upvalues = {}
+            local counter = 0
+            while true do
+               counter = counter + 1
+               local name,value = debug.getupvalue(object, counter)
+               if not name then break end
+               if name == '_ENV' then value = nil end
+               table.insert(upvalues, {name=name, value=value})
+            end
+            local dumped = string.dump(object)
+            local stringStorage = torch.CharStorage():string(dumped)
+            self:writeInt(#stringStorage)
+            self:writeChar(stringStorage)
+            self:writeObject(upvalues)
+         elseif typeidx == TYPE_TORCH then
             local version   = torch.CharStorage():string('V ' .. torch.version(object))
             local className = torch.CharStorage():string(torch.typename(object))
             self:writeInt(#version)
             self:writeChar(version)
             self:writeInt(#className)
             self:writeChar(className)
-            if object.write then
-               object:write(self)
+            local write = getmetamethod(object, 'write')
+            if write then
+               write(object, self)
             elseif type(object) == 'table' then
                local var = {}
                for k,v in pairs(object) do
@@ -164,6 +193,8 @@ function File:readObject()
       torch.setenv(self, {writeObjects={}, writeObjectsRef={}, readObjects={}})
    end
 
+   local force = torch.getenv(self).force
+
    -- read the typeidx
    local typeidx = self:readInt()
 
@@ -180,26 +211,44 @@ function File:readObject()
       local size = self:readInt()
       return self:readChar(size):string()
    elseif typeidx == TYPE_FUNCTION then
-      local size = self:readInt()
-      local dumped = self:readChar(size):string()
-      local func = loadstring(dumped)
-      local upvalues = self:readObject()
-      for index,upvalue in ipairs(upvalues) do
-         debug.setupvalue(func, index, upvalue)
-      end
-      return func
-   elseif typeidx == TYPE_TABLE or typeidx == TYPE_TORCH then
+       local size = self:readInt()
+       local dumped = self:readChar(size):string()
+       local func = loadstring(dumped)
+       local upvalues = self:readObject()
+       for index,upvalue in ipairs(upvalues) do
+          debug.setupvalue(func, index, upvalue)
+       end
+       return func
+   elseif typeidx == TYPE_TABLE or typeidx == TYPE_TORCH or typeidx == TYPE_RECUR_FUNCTION or typeidx == LEGACY_TYPE_RECUR_FUNCTION then
       -- read the index
       local index = self:readInt()
 
       -- check it is loaded already
       local objects = torch.getenv(self).readObjects
-      if objects[index] then
+      if objects[index] and not force then
          return objects[index]
       end
 
       -- otherwise read it
-      if typeidx == TYPE_TORCH then
+      if typeidx == TYPE_RECUR_FUNCTION or typeidx == LEGACY_TYPE_RECUR_FUNCTION then
+         local size = self:readInt()
+         local dumped = self:readChar(size):string()
+         local func = loadstring(dumped)
+         if not force then
+             objects[index] = func
+         end
+         local upvalues = self:readObject()
+         for index,upvalue in ipairs(upvalues) do
+            if typeidx == LEGACY_TYPE_RECUR_FUNCTION then
+               debug.setupvalue(func, index, upvalue)
+            elseif upvalue.name == '_ENV' then
+               debug.setupvalue(func, index, _ENV)
+            else
+               debug.setupvalue(func, index, upvalue.value)
+            end
+         end
+         return func
+      elseif typeidx == TYPE_TORCH then
          local version, className, versionNumber
          version = self:readChar(self:readInt()):string()
          versionNumber = tonumber(string.match(version, '^V (.*)$'))
@@ -212,10 +261,13 @@ function File:readObject()
          if not torch.factory(className) then
             error(string.format('unknown Torch class <%s>', tostring(className)))
          end
-         local object = torch.factory(className)()
-         objects[index] = object
-         if object.read then
-            object:read(self, versionNumber)
+         local object = torch.factory(className)(self)
+         if not force then
+             objects[index] = object
+         end
+         local read = getmetamethod(object, 'read')
+         if read then
+            read(object, self, versionNumber)
          elseif type(object) == 'table' then
             local var = self:readObject()
             for k,v in pairs(var) do
@@ -228,7 +280,9 @@ function File:readObject()
       else -- it is a table
          local size = self:readInt()
          local object = {}
-         objects[index] = object
+         if not force then
+             objects[index] = object
+         end
          for i = 1,size do
             local k = self:readObject()
             local v = self:readObject()
@@ -260,25 +314,39 @@ function torch.load(filename, mode)
 end
 
 -- simple helpers to serialize/deserialize arbitrary objects/tables
-function torch.serialize(object)
-   local f = torch.MemoryFile()
-   f:writeObject(object)
-   local s = f:storage():string()
-   f:close()
-   return s
+function torch.serialize(object, mode)
+   local storage = torch.serializeToStorage(object, mode)
+   return storage:string()
 end
 
-function torch.deserialize(str)
-   local x = torch.CharStorage():string(str)
-   local tx = torch.CharTensor(x)
-   local xp = torch.CharStorage(x:size(1)+1)
+-- Serialize to a CharStorage, not a lua string. This avoids
+function torch.serializeToStorage(object, mode)
+   mode = mode or 'binary'
+   local f = torch.MemoryFile()
+   f = f[mode](f)
+   f:writeObject(object)
+   local storage = f:storage()
+   f:close()
+   return storage
+end
+
+function torch.deserializeFromStorage(storage, mode)
+   mode = mode or 'binary'
+   local tx = torch.CharTensor(storage)
+   local xp = torch.CharStorage(tx:size(1)+1)
    local txp = torch.CharTensor(xp)
    txp:narrow(1,1,tx:size(1)):copy(tx)
    txp[tx:size(1)+1] = 0
    local f = torch.MemoryFile(xp)
+   f = f[mode](f)
    local object = f:readObject()
    f:close()
    return object
+end
+
+function torch.deserialize(str, mode)
+   local storage = torch.CharStorage():string(str)
+   return torch.deserializeFromStorage(storage, mode)
 end
 
 -- public API (saveobj/loadobj are safe for global import)

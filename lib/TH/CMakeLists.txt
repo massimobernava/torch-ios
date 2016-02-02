@@ -3,12 +3,12 @@
 SET(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
 
 SET(hdr 
-  THGeneral.h THStorage.h THTensor.h THTensorApply.h
-  THBlas.h THLapack.h THLogAdd.h THRandom.h THVector.h)
+  THGeneral.h THAllocator.h THStorage.h THTensor.h THTensorApply.h
+  THBlas.h THLapack.h THLogAdd.h THRandom.h THVector.h THAtomic.h)
 SET(src 
-  THGeneral.c THStorage.c THTensor.c THBlas.c THLapack.c
+  THGeneral.c THAllocator.c THStorage.c THTensor.c THBlas.c THLapack.c
   THLogAdd.c THRandom.c
-  THFile.c THDiskFile.c THMemoryFile.c)
+  THFile.c THDiskFile.c THMemoryFile.c THAtomic.c)
 
 SET(src ${src} ${hdr})
 
@@ -81,6 +81,7 @@ INSTALL(TARGETS TH
 
 INSTALL(FILES
   TH.h
+  THAllocator.h
   THBlas.h
   THDiskFile.h
   THFile.h
@@ -99,6 +100,7 @@ INSTALL(FILES
   THTensorDimApply.h
   THTensorMacros.h
   THVector.h
+  THAtomic.h
   DESTINATION "${Torch_INSTALL_INCLUDE_SUBDIR}/TH")
 
 INSTALL(FILES

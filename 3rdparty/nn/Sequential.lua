@@ -1,7 +1,7 @@
-local Sequential, parent = torch.class('nn.Sequential', 'nn.Module')
+local Sequential, _ = torch.class('nn.Sequential', 'nn.Container')
 
-function Sequential:__init()
-   self.modules = {}
+function Sequential:__len()
+   return #self.modules
 end
 
 function Sequential:add(module)
@@ -13,19 +13,36 @@ function Sequential:add(module)
    return self
 end
 
-function Sequential:size()
-   return #self.modules
+function Sequential:insert(module, index)
+   index = index or (#self.modules + 1)
+   if index > (#self.modules + 1) or index < 1 then
+      error"index should be contiguous to existing modules"
+   end
+   table.insert(self.modules, index, module)
+   self.output = self.modules[#self.modules].output
+   self.gradInput = self.modules[1].gradInput
 end
 
-function Sequential:get(index)
-   return self.modules[index]
+function Sequential:remove(index)
+   index = index or #self.modules
+   if index > #self.modules or index < 1 then
+      error"index out of range"
+   end
+   table.remove(self.modules, index)
+   if #self.modules > 0 then
+       self.output = self.modules[#self.modules].output
+       self.gradInput = self.modules[1].gradInput
+   else
+       self.output = torch.Tensor()
+       self.gradInput = torch.Tensor()
+   end
 end
 
 function Sequential:updateOutput(input)
    local currentOutput = input
-   for i=1,#self.modules do 
+   for i=1,#self.modules do
       currentOutput = self.modules[i]:updateOutput(currentOutput)
-   end 
+   end
    self.output = currentOutput
    return currentOutput
 end
@@ -54,8 +71,23 @@ function Sequential:accGradParameters(input, gradOutput, scale)
       currentGradOutput = currentModule.gradInput
       currentModule = previousModule
    end
-   
+
    currentModule:accGradParameters(input, currentGradOutput, scale)
+end
+
+function Sequential:backward(input, gradOutput, scale)
+   scale = scale or 1
+   local currentGradOutput = gradOutput
+   local currentModule = self.modules[#self.modules]
+   for i=#self.modules-1,1,-1 do
+      local previousModule = self.modules[i]
+      currentGradOutput = currentModule:backward(previousModule.output, currentGradOutput, scale)
+      currentModule.gradInput = currentGradOutput
+      currentModule = previousModule
+   end
+   currentGradOutput = currentModule:backward(input, currentGradOutput, scale)
+   self.gradInput = currentGradOutput
+   return currentGradOutput
 end
 
 function Sequential:accUpdateGradParameters(input, gradOutput, lr)
@@ -67,55 +99,10 @@ function Sequential:accUpdateGradParameters(input, gradOutput, lr)
       currentGradOutput = currentModule.gradInput
       currentModule = previousModule
    end
-   
+
    currentModule:accUpdateGradParameters(input, currentGradOutput, lr)
 end
 
-function Sequential:zeroGradParameters()
-  for i=1,#self.modules do
-     self.modules[i]:zeroGradParameters()
-  end
-end
-
-function Sequential:updateParameters(learningRate)
-   for i=1,#self.modules do
-      self.modules[i]:updateParameters(learningRate)
-   end
-end
-
-function Sequential:share(mlp,...)
-   for i=1,#self.modules do
-      self.modules[i]:share(mlp.modules[i],...); 
-   end
-end
-
-function Sequential:reset(stdv)
-   for i=1,#self.modules do
-      self.modules[i]:reset(stdv)
-   end
-end
-
-function Sequential:parameters()
-   local function tinsert(to, from)
-      if type(from) == 'table' then
-         for i=1,#from do
-            tinsert(to,from[i])
-         end
-      else
-         table.insert(to,from)
-      end
-   end
-   local w = {}
-   local gw = {}
-   for i=1,#self.modules do
-      local mw,mgw = self.modules[i]:parameters()
-      if mw then
-         tinsert(w,mw)
-         tinsert(gw,mgw)
-      end
-   end
-   return w,gw
-end
 
 function Sequential:__tostring__()
    local tab = '  '

@@ -1,19 +1,9 @@
-local Concat, parent = torch.class('nn.Concat', 'nn.Module')
+local Concat, parent = torch.class('nn.Concat', 'nn.Container')
 
 function Concat:__init(dimension)
    parent.__init(self)
-   self.modules = {}
    self.size = torch.LongStorage()
    self.dimension = dimension
-end
-
-function Concat:add(module)
-   table.insert(self.modules, module)
-   return self
-end
-
-function Concat:get(index)
-   return self.modules[index]
 end
 
 function Concat:updateOutput(input)
@@ -28,10 +18,9 @@ function Concat:updateOutput(input)
       end
    end
    self.output:resize(self.size)
-   
+
    local offset = 1
    for i,module in ipairs(self.modules) do
-      --local currentOutput = module:updateOutput(input)
       local currentOutput = outs[i]
       self.output:narrow(self.dimension, offset, currentOutput:size(self.dimension)):copy(currentOutput)
       offset = offset + currentOutput:size(self.dimension)
@@ -46,11 +35,13 @@ function Concat:updateGradInput(input, gradOutput)
    for i,module in ipairs(self.modules) do
       local currentOutput = module.output
       local currentGradInput = module:updateGradInput(input, gradOutput:narrow(self.dimension, offset, currentOutput:size(self.dimension)))
-        
-      if i==1 then
-         self.gradInput:copy(currentGradInput)
-      else
-         self.gradInput:add(currentGradInput)
+
+      if currentGradInput then -- if the module does not produce a gradInput (for example first layer), then ignore it and move on.
+         if i==1 then
+            self.gradInput:copy(currentGradInput)
+         else
+            self.gradInput:add(currentGradInput)
+         end
       end
       offset = offset + currentOutput:size(self.dimension)
    end
@@ -62,62 +53,43 @@ function Concat:accGradParameters(input, gradOutput, scale)
    local offset = 1
    for i,module in ipairs(self.modules) do
       local currentOutput = module.output
-      local currentGradInput = module:accGradParameters(input,
-                                                        gradOutput:narrow(self.dimension, offset, currentOutput:size(self.dimension)),
-                                                        scale)
+      module:accGradParameters(
+          input,
+          gradOutput:narrow(self.dimension, offset, currentOutput:size(self.dimension)),
+          scale)
       offset = offset + currentOutput:size(self.dimension)
    end
+end
+
+function Concat:backward(input, gradOutput, scale)
+   self.gradInput:resizeAs(input)
+   scale = scale or 1
+   local offset = 1
+   for i,module in ipairs(self.modules) do
+      local currentOutput = module.output
+      local currentGradInput = module:backward(input, gradOutput:narrow(self.dimension, offset, currentOutput:size(self.dimension)), scale)
+      if currentGradInput then -- if the module does not produce a gradInput (for example first layer), then ignore it and move on.
+         if i==1 then
+            self.gradInput:copy(currentGradInput)
+         else
+            self.gradInput:add(currentGradInput)
+         end
+      end
+      offset = offset + currentOutput:size(self.dimension)
+   end
+   return self.gradInput
 end
 
 function Concat:accUpdateGradParameters(input, gradOutput, lr)
    local offset = 1
    for i,module in ipairs(self.modules) do
       local currentOutput = module.output
-      local currentGradInput = module:accUpdateGradParameters(input,
-                                                              gradOutput:narrow(self.dimension, offset, currentOutput:size(self.dimension)),
-                                                              lr)
+      module:accUpdateGradParameters(
+          input,
+          gradOutput:narrow(self.dimension, offset, currentOutput:size(self.dimension)),
+          lr)
       offset = offset + currentOutput:size(self.dimension)
    end
-end
-
-function Concat:zeroGradParameters()
-   for _,module in ipairs(self.modules) do
-      module:zeroGradParameters()
-   end
-end
-
-function Concat:updateParameters(learningRate)
-   for _,module in ipairs(self.modules) do
-      module:updateParameters(learningRate)
-   end
-end
-
-function Concat:share(mlp,...)
-   for i=1,#self.modules do
-      self.modules[i]:share(mlp.modules[i],...); 
-   end
-end
-
-function Concat:parameters()
-   local function tinsert(to, from)
-      if type(from) == 'table' then
-         for i=1,#from do
-            tinsert(to,from[i])
-         end
-      else
-         table.insert(to,from)
-      end
-   end
-   local w = {}
-   local gw = {}
-   for i=1,#self.modules do
-      local mw,mgw = self.modules[i]:parameters()
-      if mw then
-         tinsert(w,mw)
-         tinsert(gw,mgw)
-      end
-   end
-   return w,gw
 end
 
 function Concat:__tostring__()
@@ -127,7 +99,7 @@ function Concat:__tostring__()
    local ext = '  |    '
    local extlast = '       '
    local last = '   ... -> '
-   local str = 'nn.Concat'
+   local str = torch.type(self)
    str = str .. ' {' .. line .. tab .. 'input'
    for i=1,#self.modules do
       if i == self.modules then

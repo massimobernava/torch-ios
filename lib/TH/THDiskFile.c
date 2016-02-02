@@ -30,7 +30,7 @@ size_t fread__(void *ptr, size_t size, size_t nitems, FILE *stream)
 {
   size_t nread = 0;
   while(!feof(stream) && !ferror(stream) && (nread < nitems))
-    nread += fread(ptr+nread*size, size, THMin(2147483648/size, nitems-nread), stream);
+    nread += fread((char*)ptr+nread*size, size, THMin(2147483648/size, nitems-nread), stream);
   return nread;
 }
 #else
@@ -307,11 +307,11 @@ READ_WRITE_METHODS(long, Long,
 
 READ_WRITE_METHODS(float, Float,
                    int ret = fscanf(dfself->handle, "%g", &data[i]); if(ret <= 0) break; else nread++,
-                   int ret = fprintf(dfself->handle, "%g", data[i]); if(ret <= 0) break; else nwrite++)
+                   int ret = fprintf(dfself->handle, "%.9g", data[i]); if(ret <= 0) break; else nwrite++)
 
 READ_WRITE_METHODS(double, Double,
                    int ret = fscanf(dfself->handle, "%lg", &data[i]); if(ret <= 0) break; else nread++,
-                   int ret = fprintf(dfself->handle, "%lg", data[i]); if(ret <= 0) break; else nwrite++)
+                   int ret = fprintf(dfself->handle, "%.17g", data[i]); if(ret <= 0) break; else nwrite++)
 
 static long THDiskFile_readString(THFile *self, const char *format, char **str_)
 {

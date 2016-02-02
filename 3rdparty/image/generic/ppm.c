@@ -10,8 +10,6 @@ static int libppm_(Main_load)(lua_State *L)
     printf ( "Failed to open file '%s'!\n", filename );
   }
 
-  // parse header
-  char hdr[256]={};
   long W,H,C;
   char p,n;
   int D, bps, bpc;
@@ -42,9 +40,6 @@ static int libppm_(Main_load)(lua_State *L)
 
   //printf("Loading PPM\nMAGIC: %c%c\nWidth: %ld, Height: %ld\nChannels: %d, Bits-per-pixel: %d\n", p, n, W, H, D, bps);
 
-  // Skip to end of header (newline)
-  fgets(hdr, 256, fp);
-
   // load data
   unsigned char *r = NULL;
   if ( n=='6' ) {
@@ -59,7 +54,7 @@ static int libppm_(Main_load)(lua_State *L)
     int c,i;
     C = 3;
     r = (unsigned char *)malloc(W*H*C);
-    for (i=0; i<W*H*3; i++) {
+    for (i=0; i<W*H*C; i++) {
       fscanf ( fp, "%d", &c );
       r[i] = 255*c / D;
     }
@@ -67,7 +62,7 @@ static int libppm_(Main_load)(lua_State *L)
     int c,i;
     C = 1;
     r = (unsigned char *)malloc(W*H*C);
-    for (i=0; i<W*H*3; i++) {
+    for (i=0; i<W*H*C; i++) {
       fscanf ( fp, "%d", &c );
       r[i] = 255*c / D;
     }
@@ -87,7 +82,8 @@ static int libppm_(Main_load)(lua_State *L)
        if (bpc == 1) {
           data[k*H*W+i] = (real)r[j++];
        } else if (bpc == 2) {
-          val = r[j++] | (r[j++] << 8);
+          val = r[j] | (r[j+1] << 8);
+          j += 2;
           data[k*H*W+i] = (real)val;
        }
     }
@@ -159,7 +155,7 @@ int libppm_(Main_save)(lua_State *L) {
   return 1;
 }
 
-static const luaL_reg libppm_(Main__)[] =
+static const luaL_Reg libppm_(Main__)[] =
 {
   {"load", libppm_(Main_load)},
   {"save", libppm_(Main_save)},

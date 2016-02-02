@@ -4,20 +4,36 @@
 
 static int torch_Storage_(new)(lua_State *L)
 {
+  int index = 1;
   THStorage *storage;
-  if(lua_type(L, 1) == LUA_TSTRING)
+  THAllocator *allocator = luaT_toudata(L, index, "torch.Allocator");
+  if (allocator) index++;
+
+  if(lua_type(L, index) == LUA_TSTRING)
   {
-    const char *fileName = luaL_checkstring(L, 1);
-    int isShared = luaT_optboolean(L, 2, 0);
-    storage = THStorage_(newWithMapping)(fileName, isShared);  }
-  else if(lua_type(L, 1) == LUA_TTABLE)
+    if (allocator)
+      THError("Passing allocator not supported when using file mapping");
+
+    const char *fileName = luaL_checkstring(L, index);
+    int isShared = 0;
+    if(luaT_optboolean(L, index + 1, 0))
+      isShared = TH_ALLOCATOR_MAPPED_SHARED;
+    long size = luaL_optlong(L, index + 2, 0);
+    if (isShared && luaT_optboolean(L, index + 3, 0))
+      isShared = TH_ALLOCATOR_MAPPED_SHAREDMEM;
+    storage = THStorage_(newWithMapping)(fileName, size, isShared);
+  }
+  else if(lua_type(L, index) == LUA_TTABLE)
   {
-    long size = lua_objlen(L, 1);
+    long size = lua_objlen(L, index);
     long i;
-    storage = THStorage_(newWithSize)(size);
+    if (allocator)
+      storage = THStorage_(newWithAllocator)(size, allocator, NULL);
+    else
+      storage = THStorage_(newWithSize)(size);
     for(i = 1; i <= size; i++)
     {
-      lua_rawgeti(L, 1, i);
+      lua_rawgeti(L, index, i);
       if(!lua_isnumber(L, -1))
       {
         THStorage_(free)(storage);
@@ -27,13 +43,53 @@ static int torch_Storage_(new)(lua_State *L)
       lua_pop(L, 1);
     }
   }
+  else if(lua_type(L, index) == LUA_TUSERDATA)
+  {
+    if (allocator)
+      THError("Passing allocator not supported when using storage views");
+
+    THStorage *src = luaT_checkudata(L, index, torch_Storage);
+    real *ptr = src->data;
+    long offset = luaL_optlong(L, index + 1, 1) - 1;
+    if (offset < 0 || offset >= src->size) {
+      luaL_error(L, "offset out of bounds");
+    }
+    long size = luaL_optlong(L, index + 2, src->size - offset);
+    if (size < 1 || size > (src->size - offset)) {
+      luaL_error(L, "size out of bounds");
+    }
+    storage = THStorage_(newWithData)(ptr + offset, size);
+    storage->flag = TH_STORAGE_REFCOUNTED | TH_STORAGE_VIEW;
+    storage->view = src;
+    THStorage_(retain)(storage->view);
+  }
+  else if(lua_type(L, index + 1) == LUA_TNUMBER)
+  {
+    long size = luaL_optlong(L, index, 0);
+    real *ptr = (real *)luaL_optlong(L, index + 1, 0);
+    if (allocator)
+      storage = THStorage_(newWithDataAndAllocator)(ptr, size, allocator, NULL);
+    else
+      storage = THStorage_(newWithData)(ptr, size);
+    storage->flag = TH_STORAGE_REFCOUNTED;
+  }
   else
   {
-    long size = luaL_optlong(L, 1, 0);
-    storage = THStorage_(newWithSize)(size);
+    long size = luaL_optlong(L, index, 0);
+    if (allocator)
+      storage = THStorage_(newWithAllocator)(size, allocator, NULL);
+    else
+      storage = THStorage_(newWithSize)(size);
   }
   luaT_pushudata(L, storage, torch_Storage);
   return 1;
+}
+
+static int torch_Storage_(retain)(lua_State *L)
+{
+  THStorage *storage = luaT_checkudata(L, 1, torch_Storage);
+  THStorage_(retain)(storage);
+  return 0;
 }
 
 static int torch_Storage_(free)(lua_State *L)
@@ -85,6 +141,12 @@ static int torch_Storage_(fill)(lua_State *L)
   double value = luaL_checknumber(L, 2);
   THStorage_(fill)(storage, (real)value);
   lua_settop(L, 1);
+  return 1;
+}
+
+static int torch_Storage_(elementSize)(lua_State *L)
+{
+  lua_pushnumber(L, THStorage_(elementSize)());
   return 1;
 }
 
@@ -172,7 +234,7 @@ static int torch_Storage_(write)(lua_State *L)
 {
   THStorage *storage = luaT_checkudata(L, 1, torch_Storage);
   THFile *file = luaT_checkudata(L, 2, "torch.File");
- 
+
   THFile_writeLongScalar(file, storage->size);
   THFile_writeRealRaw(file, storage->data, storage->size);
 
@@ -192,7 +254,10 @@ static int torch_Storage_(read)(lua_State *L)
 }
 
 static const struct luaL_Reg torch_Storage_(_) [] = {
+  {"retain", torch_Storage_(retain)},
+  {"free", torch_Storage_(free)},
   {"size", torch_Storage_(__len__)},
+  {"elementSize", torch_Storage_(elementSize)},
   {"__len__", torch_Storage_(__len__)},
   {"__newindex__", torch_Storage_(__newindex__)},
   {"__index__", torch_Storage_(__index__)},
@@ -212,7 +277,7 @@ void torch_Storage_(init)(lua_State *L)
 {
   luaT_newmetatable(L, torch_Storage, NULL,
                     torch_Storage_(new), torch_Storage_(free), torch_Storage_(factory));
-  luaL_register(L, NULL, torch_Storage_(_));
+  luaT_setfuncs(L, torch_Storage_(_), 0);
   lua_pop(L, 1);
 }
 

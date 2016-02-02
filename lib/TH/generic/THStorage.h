@@ -8,18 +8,18 @@
 
    Pb: THMapStorage is kind of a class
    THLab_()... comment je m'en sors?
-   
+
    en template, faudrait que je les instancie toutes!!! oh boy!
    Et comment je sais que c'est pour Cuda? Le type float est le meme dans les <>
-   
+
    au bout du compte, ca serait sur des pointeurs float/double... etc... = facile.
    primitives??
  */
 
 #define TH_STORAGE_REFCOUNTED 1
 #define TH_STORAGE_RESIZABLE  2
-#define TH_STORAGE_MAPPED     4
-#define TH_STORAGE_FREEMEM    8
+#define TH_STORAGE_FREEMEM    4
+#define TH_STORAGE_VIEW       8
 
 typedef struct THStorage
 {
@@ -27,11 +27,14 @@ typedef struct THStorage
     long size;
     int refcount;
     char flag;
-
+    THAllocator *allocator;
+    void *allocatorContext;
+    struct THStorage *view;
 } THStorage;
 
 TH_API real* THStorage_(data)(const THStorage*);
 TH_API long THStorage_(size)(const THStorage*);
+TH_API int THStorage_(elementSize)();
 
 /* slow access -- checks everything */
 TH_API void THStorage_(set)(THStorage*, long, real);
@@ -43,8 +46,16 @@ TH_API THStorage* THStorage_(newWithSize1)(real);
 TH_API THStorage* THStorage_(newWithSize2)(real, real);
 TH_API THStorage* THStorage_(newWithSize3)(real, real, real);
 TH_API THStorage* THStorage_(newWithSize4)(real, real, real, real);
-TH_API THStorage* THStorage_(newWithMapping)(const char *fileName, int isShared);
+TH_API THStorage* THStorage_(newWithMapping)(const char *filename, long size, int shared);
+
+/* takes ownership of data */
 TH_API THStorage* THStorage_(newWithData)(real *data, long size);
+
+TH_API THStorage* THStorage_(newWithAllocator)(long size,
+                                               THAllocator* allocator,
+                                               void *allocatorContext);
+TH_API THStorage* THStorage_(newWithDataAndAllocator)(
+    real* data, long size, THAllocator* allocator, void *allocatorContext);
 
 /* should not differ with API */
 TH_API void THStorage_(setFlag)(THStorage *storage, const char flag);

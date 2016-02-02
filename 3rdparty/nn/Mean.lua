@@ -4,23 +4,25 @@ function Mean:__init(dimension)
    parent.__init(self)
    dimension = dimension or 1
    self.dimension = dimension
+   self._gradInput = torch.Tensor()
 end
 
 function Mean:updateOutput(input)
-   input.torch.mean(self.output, input, self.dimension)
-   self.output = self.output:select(self.dimension, 1)
+   self.output:mean(input, self.dimension)
+   if self.output:nDimension() > 1 then
+      self.output = self.output:select(self.dimension, 1)
+   end
    return self.output
 end
 
 function Mean:updateGradInput(input, gradOutput)
-   local size = gradOutput:size():totable()
-   local stride = gradOutput:stride():totable()
-   table.insert(size, self.dimension, input:size(self.dimension))
-   table.insert(stride, self.dimension, 0)
+   self._gradInput:resizeAs(gradOutput):copy(gradOutput)
+   self._gradInput:mul(1/input:size(self.dimension))
 
-   self.gradInput:resizeAs(gradOutput):copy(gradOutput)
-   self.gradInput:mul(1/input:size(self.dimension))
-   self.gradInput:resize(torch.LongStorage(size), torch.LongStorage(stride))
-
+   if input:nDimension() > 1 then
+      self._gradInput = nn.utils.addSingletonDimension(self._gradInput,
+                                                       self.dimension)
+   end
+   self.gradInput = self._gradInput:expandAs(input)
    return self.gradInput
 end
